@@ -1,0 +1,37 @@
+name: Pruebas por impacto
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Qué pruebas correr"
+        required: true
+        type: choice
+        options: [descuentos, envio, todas]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - run: npm ci
+
+      - name: Ejecutar solo lo relevante
+        run: |
+          if [ "${{ inputs.tag }}" = "todas" ]; then
+            npx playwright test
+          else
+            npx playwright test --grep @${{ inputs.tag }}
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-${{ inputs.tag }}
+          path: playwright-report
+          retention-days: 7
