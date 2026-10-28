@@ -21,9 +21,9 @@ export function calcularDescuento(
 
   if (cupon === 'BIENVENIDA' && esPrimerPedido) descuento += 0.10;
 
-  if (esFinDeSemana) descuento += 0.05;
-
   descuento = Math.min(descuento, 0.20);
+
+  if (esFinDeSemana) descuento += 0.05;
 
   return Math.round(subtotal * (1 - descuento) * 100) / 100;
 }
