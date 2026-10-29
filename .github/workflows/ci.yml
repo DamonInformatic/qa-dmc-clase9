@@ -9,6 +9,11 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2]
+        shardTotal: [2]
     steps:
       - uses: actions/checkout@v6
 
@@ -18,7 +23,41 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright test
+      - run: npx playwright test --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: blob-report
+          retention-days: 1
+
+  merge-reports:
+    if: ${{ !cancelled() }}
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - run: npm ci
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+
+      - run: npx playwright merge-reports --reporter html,json ./all-blob-reports
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: results.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: results.json
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -26,3 +65,24 @@ jobs:
           name: playwright-report
           path: playwright-report
           retention-days: 7
+
+      - name: Comentar resultado en el Pull Request
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { stats } = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+            const fallaron = stats.unexpected;
+            const total = stats.expected + stats.unexpected + stats.flaky + stats.skipped;
+
+            const cuerpo = fallaron === 0
+              ? `✅ **Pruebas Playwright:** pasaron las ${total} pruebas.`
+              : `❌ **Pruebas Playwright:** fallaron ${fallaron} de ${total} pruebas.\n\nRevisen el reporte \`playwright-report\` antes de aprobar este Pull Request.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: cuerpo,
+            });
