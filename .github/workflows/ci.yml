@@ -1,3 +1,4 @@
+yaml
 name: CI
 
 on:
@@ -6,9 +7,21 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
 jobs:
   test:
+    name: Playwright Shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
     steps:
       - uses: actions/checkout@v6
 
@@ -18,11 +31,155 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright test
+      - run: npx playwright install --with-deps
 
-      - uses: actions/upload-artifact@v4
+      - name: Ejecutar pruebas
+        run: npx playwright test --shard=${{ matrix.shard }}/3 --reporter=blob,json
+        env:
+          CI: true
+          PLAYWRIGHT_JSON_OUTPUT_NAME: results.json
+
+      - name: Guardar reporte Blob
         if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: playwright-report
+          name: blob-report-${{ matrix.shard }}
+          path: blob-report/
           retention-days: 7
+
+      - name: Guardar resultados JSON
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ matrix.shard }}
+          path: results.json
+          retention-days: 7
+
+  merge-reports:
+    name: Merge Reports and Comment
+    needs: test
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - run: npm ci
+
+      - name: Descargar reportes Blob
+        uses: actions/download-artifact@v4
+        with:
+          path: all-blob-reports
+          pattern: blob-report-*
+          merge-multiple: true
+
+      - name: Combinar reportes HTML
+        run: npx playwright merge-reports --reporter=html ./all-blob-reports
+
+      - name: Publicar reporte HTML
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-html-report
+          path: playwright-report/
+          retention-days: 7
+
+      - name: Descargar resultados JSON
+        uses: actions/download-artifact@v4
+        with:
+          path: all-results
+          pattern: results-*
+          merge-multiple: false
+
+      - name: Comentar resultado en el Pull Request
+        if: ${{ always() && github.event_name == 'pull_request' }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const resultsDir = 'all-results';
+            const files = [];
+
+            function findResults(dir) {
+              if (!fs.existsSync(dir)) return;
+
+              for (const entry of fs.readdirSync(dir, {
+                withFileTypes: true
+              })) {
+                const fullPath = path.join(dir, entry.name);
+
+                if (entry.isDirectory()) {
+                  findResults(fullPath);
+                } else if (entry.name === 'results.json') {
+                  files.push(fullPath);
+                }
+              }
+            }
+
+            findResults(resultsDir);
+
+            if (files.length === 0) {
+              core.setFailed('No se encontraron archivos results.json.');
+              return;
+            }
+
+            let total = 0;
+            let failed = 0;
+            let skipped = 0;
+            let flaky = 0;
+
+            for (const file of files) {
+              const report = JSON.parse(
+                fs.readFileSync(file, 'utf8')
+              );
+
+              const stats = report.stats;
+
+              total += stats.expected
+                + stats.unexpected
+                + stats.flaky
+                + stats.skipped;
+
+              failed += stats.unexpected;
+              skipped += stats.skipped;
+              flaky += stats.flaky;
+            }
+
+            let body;
+
+            if (failed === 0) {
+              body = [
+                '## ✅ Pruebas Playwright aprobadas',
+                '',
+                `- **Total de pruebas:** ${total}`,
+                `- **Fallidas:** ${failed}`,
+                `- **Omitidas:** ${skipped}`,
+                `- **Flaky:** ${flaky}`,
+                '',
+                'Todas las pruebas finalizaron sin fallas.'
+              ].join('\n');
+            } else {
+              body = [
+                '## ⚠️ Pruebas Playwright con fallas',
+                '',
+                `- **Total de pruebas:** ${total}`,
+                `- **Fallidas:** ${failed}`,
+                `- **Omitidas:** ${skipped}`,
+                `- **Flaky:** ${flaky}`,
+                '',
+                '**Revisen los errores antes de aprobar este Pull Request.**'
+              ].join('\n');
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body
+            });
