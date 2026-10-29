@@ -43,6 +43,9 @@ jobs:
     needs: test
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -59,7 +62,10 @@ jobs:
           pattern: blob-report-*
           merge-multiple: true
 
-      - run: npx playwright merge-reports --reporter html ./all-blob-reports
+      - run: npx playwright merge-reports --reporter html,json ./all-blob-reports
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: results.json
+          PLAYWRIGHT_JSON_OUTPUT_NAME: results.json
 
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
@@ -67,3 +73,24 @@ jobs:
           name: playwright-html-report
           path: playwright-report/
           retention-days: 7
+
+      - name: Comentar resultado en el Pull Request
+        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const { stats } = JSON.parse(fs.readFileSync('results.json', 'utf8'));
+            const fallaron = stats.unexpected;
+            const total = stats.expected + stats.unexpected + stats.flaky + stats.skipped;
+
+            const cuerpo = fallaron === 0
+              ? `✅ **Pruebas Playwright:** pasaron las ${total} pruebas.`
+              : `❌ **Pruebas Playwright:** fallaron ${fallaron} de ${total} pruebas.\n\nRevisen el reporte \`playwright-report\` antes de aprobar este Pull Request.`;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: cuerpo,
+            });

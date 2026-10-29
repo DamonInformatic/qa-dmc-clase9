@@ -15,6 +15,6 @@ export function calcularRecargoEnvio(
   if (esPremium) return 0;
   if (enCampana && monto > 100) return 0;
   if (monto >= 200) return 0;
-  if (monto >= 50) return 12;
+  if (monto > 50) return 12;
   return 20;
 }
